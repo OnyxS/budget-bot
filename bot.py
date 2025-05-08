@@ -72,7 +72,7 @@ class Config:
         "add_user_message": "Введите ID пользователя:",
         "remove_user_message": "Введите ID пользователя:",
         "invalid_id": "❌ Неверный формат ID. Введите целое число:",
-        "cancel_message": "🚫 Операция отменена",
+        "cancel_message": "🚫 Отмена операции",
     }
 
 
@@ -87,15 +87,21 @@ cell_cache: Dict[str, Dict[str, Any]] = {
 }
 
 
-async def create_keyboard(user_id: int) -> ReplyKeyboardMarkup:
-    """Создание клавиатуры в зависимости от прав пользователя"""
-    user_data = load_users()
-    is_admin = user_id == user_data["admin_id"]
+async def create_keyboard(
+    user_id: int, show_cancel: bool = False
+) -> ReplyKeyboardMarkup:
+    """Создание клавиатуры с кнопкой отмены"""
+    if show_cancel:
+        # Режим диалога - только кнопка отмены
+        buttons = [[Config.TEXTS["cancel_message"]]]
+    else:
+        # Основной режим
+        user_data = load_users()
+        is_admin = user_id == user_data["admin_id"]
 
-    buttons = [[Config.TEXTS["main_button"]]]  # Закрывающая скобка для первого элемента
-
-    if is_admin:
-        buttons.append([Config.TEXTS["add_button"], Config.TEXTS["remove_button"]])
+        buttons = [[Config.TEXTS["main_button"]]]
+        if is_admin:
+            buttons.append([Config.TEXTS["add_button"], Config.TEXTS["remove_button"]])
 
     return ReplyKeyboardMarkup(buttons, resize_keyboard=True, one_time_keyboard=False)
 
@@ -241,7 +247,7 @@ async def add_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Начало процедуры добавления пользователя"""
 
     # Сохраняем состояние в context.chat_data
-    keyboard = await create_keyboard(update.effective_user.id)
+    keyboard = await create_keyboard(update.effective_user.id, show_cancel=True)
 
     context.chat_data["current_state"] = States.AWAIT_USER_ID_ADD
     user_data = load_users()
@@ -255,17 +261,24 @@ async def add_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
     message = f"{users_list}\n " f"{Config.TEXTS['add_user_message']}"
 
     await update.message.reply_text(message, reply_markup=keyboard)
+
     return States.AWAIT_USER_ID_ADD
 
 
 async def remove_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Начало процедуры удаления пользователя"""
+    """Начало процедуры удаления с кнопкой отмены"""
+    if not await check_access(update):
+        return ConversationHandler.END
 
-    # Сохраняем состояние в context.chat_data
-    keyboard = await create_keyboard(update.effective_user.id)
-
-    context.chat_data["current_state"] = States.AWAIT_USER_ID_REMOVE
     user_data = load_users()
+    if update.effective_user.id != user_data["admin_id"]:
+        await update.message.reply_text(Config.TEXTS["admin_only"])
+        return ConversationHandler.END
+
+    # Показываем только кнопку отмены
+    keyboard = await create_keyboard(update.effective_user.id, show_cancel=True)
+
+    # Формируем сообщение со списком
     users_list = (
         "📋 Текущий список пользователей:\n"
         + "\n".join(f"▫️ {user_id}" for user_id in user_data["allowed_users"])
@@ -273,13 +286,22 @@ async def remove_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
         else "📋 Список пользователей пуст"
     )
 
-    message = f"{users_list}\n " f"{Config.TEXTS['remove_user_message']}"
-    await update.message.reply_text(message, reply_markup=keyboard)
+    await update.message.reply_text(users_list)
+    await update.message.reply_text(
+        Config.TEXTS["remove_user_message"], reply_markup=keyboard
+    )
+
+    context.chat_data["current_state"] = States.AWAIT_USER_ID_REMOVE
     return States.AWAIT_USER_ID_REMOVE
 
 
 async def handle_user_id_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Обработчик ввода ID пользователя"""
+
+    text = update.message.text
+
+    if text == Config.TEXTS["cancel_message"]:
+        return await cancel(update, context)
 
     try:
         user_id = int(update.message.text)
@@ -293,36 +315,57 @@ async def handle_user_id_input(update: Update, context: ContextTypes.DEFAULT_TYP
 async def process_user_id(
     update: Update, context: ContextTypes.DEFAULT_TYPE, user_id: int
 ):
-    """Обработка полученного ID"""
-
+    """Обработка полученного ID с возвратом в главное меню"""
     current_state = context.chat_data.get("current_state")
-    logging.info(f"Processing user ID {user_id} for state {current_state}")
-
     user_data = load_users()
 
-    if current_state == States.AWAIT_USER_ID_ADD:
-        if user_id in user_data["allowed_users"]:
-            await update.message.reply_text("ℹ️ Пользователь уже существует")
-        else:
-            user_data["allowed_users"].append(user_id)
-            save_users(user_data)
-            await update.message.reply_text(f"✅ Пользователь {user_id} добавлен")
-        # Очищаем состояние после завершения
-        del context.chat_data["current_state"]
-        return ConversationHandler.END
+    try:
+        if current_state == States.AWAIT_USER_ID_ADD:
+            # Логика добавления
+            if user_id in user_data["allowed_users"]:
+                await update.message.reply_text("ℹ️ Пользователь уже существует")
+            else:
+                user_data["allowed_users"].append(user_id)
+                save_users(user_data)
+                await update.message.reply_text(f"✅ Пользователь {user_id} добавлен")
 
-    elif current_state == States.AWAIT_USER_ID_REMOVE:
-        if user_id in user_data["allowed_users"]:
-            user_data["allowed_users"].remove(user_id)
-            save_users(user_data)
-            await update.message.reply_text(f"✅ Пользователь {user_id} удален")
-        else:
-            await update.message.reply_text("ℹ️ Пользователь не найден")
-        # Очищаем состояние после завершения
-        del context.chat_data["current_state"]
-        return ConversationHandler.END
+        elif current_state == States.AWAIT_USER_ID_REMOVE:
+            # Логика удаления
+            if user_id in user_data["allowed_users"]:
+                user_data["allowed_users"].remove(user_id)
+                save_users(user_data)
+                await update.message.reply_text(f"✅ Пользователь {user_id} удален")
+            else:
+                await update.message.reply_text("ℹ️ Пользователь не найден")
 
-    await update.message.reply_text("⚠️ Неизвестное состояние")
+        # Всегда возвращаем в главное меню после операции
+        keyboard = await create_keyboard(update.effective_user.id)  # show_cancel=False
+        await update.message.reply_text(
+            Config.TEXTS["start_message"], reply_markup=keyboard
+        )
+
+    except Exception as e:
+        logging.error(f"Ошибка: {str(e)}")
+        await update.message.reply_text(Config.TEXTS["error_message"])
+
+    finally:
+        # Гарантированная очистка состояния
+        if "current_state" in context.chat_data:
+            del context.chat_data["current_state"]
+
+    return ConversationHandler.END
+
+
+async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Улучшенная отмена операции"""
+    if "current_state" in context.chat_data:
+        del context.chat_data["current_state"]
+
+    # Явная отправка новой клавиатуры
+    keyboard = await create_keyboard(update.effective_user.id)
+    await update.message.reply_text(
+        Config.TEXTS["cancel_message"], reply_markup=keyboard
+    )
     return ConversationHandler.END
 
 
@@ -330,6 +373,9 @@ async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Отмена операции"""
     if "current_state" in context.chat_data:
         del context.chat_data["current_state"]
+
+    # Создаем клавиатуру главного меню
+    keyboard = await create_keyboard(update.effective_user.id)
     await update.message.reply_text(
         Config.TEXTS["cancel_message"], reply_markup=keyboard
     )
@@ -357,14 +403,12 @@ def configure_logging():
 
 
 async def handle_buttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_data = load_users()
-    user_id = update.effective_user.id
     text = update.message.text
 
-    if text in [Config.TEXTS["add_button"], Config.TEXTS["remove_button"]]:
-        if user_id != user_data["admin_id"]:
-            await update.message.reply_text(Config.TEXTS["admin_only"])
-            return
+    if text == Config.TEXTS["cancel_message"]:
+        if "current_state" in context.chat_data:
+            del context.chat_data["current_state"]
+        return await start(update, context)
 
     if text == Config.TEXTS["main_button"]:
         return await get_result(update, context)
@@ -411,13 +455,17 @@ def main():
                     )
                 ],
             },
-            fallbacks=[CommandHandler("cancel", cancel)],
+            fallbacks=[
+                MessageHandler(
+                    filters.TEXT
+                    & filters.Regex(rf"^{Config.TEXTS['cancel_message']}$"),
+                    cancel,
+                )
+            ],
+            allow_reentry=True,
         )
 
         application.add_handler(conv_handler)
-        application.add_handler(
-            MessageHandler(filters.TEXT & ~filters.COMMAND, handle_buttons)
-        )
         application.add_handler(CommandHandler("start", start))
         application.add_handler(
             MessageHandler(
