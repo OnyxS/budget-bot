@@ -244,9 +244,17 @@ async def add_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
     keyboard = await create_keyboard(update.effective_user.id)
 
     context.chat_data["current_state"] = States.AWAIT_USER_ID_ADD
-    await update.message.reply_text(
-        text=Config.TEXTS["add_user_message"], reply_markup=keyboard
+    user_data = load_users()
+    users_list = (
+        "📋 Текущий список пользователей:\n"
+        + "\n".join(f"▫️ {user_id}" for user_id in user_data["allowed_users"])
+        if user_data["allowed_users"]
+        else "📋 Список пользователей пуст"
     )
+
+    message = f"{users_list}\n " f"{Config.TEXTS['add_user_message']}"
+
+    await update.message.reply_text(message, reply_markup=keyboard)
     return States.AWAIT_USER_ID_ADD
 
 
@@ -257,9 +265,16 @@ async def remove_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
     keyboard = await create_keyboard(update.effective_user.id)
 
     context.chat_data["current_state"] = States.AWAIT_USER_ID_REMOVE
-    await update.message.reply_text(
-        text=Config.TEXTS["remove_user_message"], reply_markup=keyboard
+    user_data = load_users()
+    users_list = (
+        "📋 Текущий список пользователей:\n"
+        + "\n".join(f"▫️ {user_id}" for user_id in user_data["allowed_users"])
+        if user_data["allowed_users"]
+        else "📋 Список пользователей пуст"
     )
+
+    message = f"{users_list}\n " f"{Config.TEXTS['remove_user_message']}"
+    await update.message.reply_text(message, reply_markup=keyboard)
     return States.AWAIT_USER_ID_REMOVE
 
 
